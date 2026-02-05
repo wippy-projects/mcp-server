@@ -1,0 +1,57 @@
+version: "1.0"
+namespace: mcp
+
+entries:
+  - name: definition
+    kind: ns.definition
+    readme: file://README.md
+    meta:
+      title: MCP Server
+      description: MCP (Model Context Protocol) server for Wippy — exposes tools to LLM clients over stdio
+
+  - name: dependency.terminal
+    kind: ns.dependency
+    component: wippy/terminal
+    version: ">=0.3.0"
+
+  # Terminal host — bridges process to stdin/stdout
+  - name: terminal
+    kind: terminal.host
+    lifecycle:
+      auto_start: true
+
+  # --- Shared libraries ---
+
+  - name: jsonrpc
+    kind: library.lua
+    source: file://jsonrpc.lua
+    modules:
+      - json
+
+  - name: protocol
+    kind: library.lua
+    source: file://protocol.lua
+    imports:
+      jsonrpc: mcp:jsonrpc
+
+  - name: tools_lib
+    kind: library.lua
+    source: file://tools.lua
+    modules:
+      - registry
+      - funcs
+    imports:
+      jsonrpc: mcp:jsonrpc
+
+  # --- Server process ---
+
+  - name: server
+    kind: process.lua
+    source: file://server.lua
+    method: main
+    modules:
+      - io
+    imports:
+      jsonrpc: mcp:jsonrpc
+      protocol: mcp:protocol
+      tools: mcp:tools_lib

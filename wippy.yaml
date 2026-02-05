@@ -1,0 +1,9 @@
+organization: butschster
+module: mcp-server
+description: MCP (Model Context Protocol) server for Wippy — exposes tools to LLM clients over stdio
+license: MIT
+keywords:
+  - mcp
+  - llm
+  - tools
+  - stdio
