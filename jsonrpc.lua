@@ -29,8 +29,9 @@ local function encode_response(id, result)
     local encoded = json.encode(msg)
 
     -- Workaround: Wippy's json.encode turns empty tables into [].
-    -- MCP requires {} for empty results (ping, empty capabilities).
-    encoded = string.gsub(encoded, '"result":%[%]', '"result":{}')
+    -- MCP requires {} for empty objects (ping result, capabilities, inputSchema properties, etc.).
+    -- Replace all empty arrays that follow a key — these are always intended as empty objects.
+    encoded = string.gsub(encoded, ":%[%]", ":{}")
     return encoded
 end
 
