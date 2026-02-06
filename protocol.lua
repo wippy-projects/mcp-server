@@ -35,6 +35,9 @@ local function new_server(config)
         if server.capabilities.tools then
             caps.tools = { listChanged = false }
         end
+        if server.capabilities.prompts then
+            caps.prompts = { listChanged = false }
+        end
 
         local result = {
             protocolVersion = PROTOCOL_VERSION,

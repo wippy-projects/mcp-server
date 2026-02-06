@@ -43,6 +43,15 @@ entries:
     imports:
       jsonrpc: mcp:jsonrpc
 
+  - name: prompts_lib
+    kind: library.lua
+    source: file://prompts.lua
+    modules:
+      - registry
+      - funcs
+    imports:
+      jsonrpc: mcp:jsonrpc
+
   # --- Server process ---
 
   - name: server
@@ -55,3 +64,4 @@ entries:
       jsonrpc: mcp:jsonrpc
       protocol: mcp:protocol
       tools: mcp:tools_lib
+      prompts: mcp:prompts_lib

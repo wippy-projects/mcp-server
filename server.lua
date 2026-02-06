@@ -8,12 +8,13 @@ local function main()
     local jsonrpc = require("jsonrpc")
     local protocol = require("protocol")
     local tools = require("tools")
+    local prompts = require("prompts")
 
     -- Create protocol handler
     local server = protocol.new_server({
         name = "wippy-mcp",
         version = "0.1.0",
-        capabilities = { tools = true }
+        capabilities = { tools = true, prompts = true }
     })
 
     --- Write a JSON-RPC response line to stdout
@@ -49,6 +50,13 @@ local function main()
 
         -- Try tools handler (tools/list, tools/call)
         response = tools.handle(msg)
+        if response then
+            send(response)
+            return
+        end
+
+        -- Try prompts handler (prompts/list, prompts/get)
+        response = prompts.handle(msg)
         if response then
             send(response)
             return
