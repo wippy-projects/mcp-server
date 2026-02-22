@@ -11,7 +11,7 @@ local jsonrpc = require("jsonrpc")
 -- Tool discovery from registry
 ---------------------------------------------------------------------------
 
-local function discover()
+local function discover(scope)
     local entries, err = registry.find({kind = "function.lua"})
     if err then
         return nil, err
@@ -21,14 +21,19 @@ local function discover()
     for _, entry in ipairs(entries) do
         local meta = entry.meta
         if meta and meta["mcp.tool"] == true then
-            local name = meta["mcp.name"] or entry.id
-            tools[name] = {
-                entry_id = entry.id,
-                name = name,
-                description = meta["mcp.description"],
-                inputSchema = meta["mcp.inputSchema"],
-                annotations = meta["mcp.annotations"]
-            }
+            -- Scope filter: scoped tools only visible on matching endpoints
+            if meta["mcp.scope"] and meta["mcp.scope"] ~= scope then
+                -- skip: tool has a scope that doesn't match this endpoint
+            else
+                local name = meta["mcp.name"] or entry.id
+                tools[name] = {
+                    entry_id = entry.id,
+                    name = name,
+                    description = meta["mcp.description"],
+                    inputSchema = meta["mcp.inputSchema"],
+                    annotations = meta["mcp.annotations"]
+                }
+            end
         end
     end
 
@@ -39,8 +44,8 @@ end
 -- tools/list handler
 ---------------------------------------------------------------------------
 
-local function handle_list(id, params)
-    local tools, err = discover()
+local function handle_list(id, params, scope)
+    local tools, err = discover(scope)
     if err then
         return jsonrpc.internal_error(id, "Failed to discover tools: " .. tostring(err))
     end
@@ -67,7 +72,7 @@ end
 -- tools/call handler
 ---------------------------------------------------------------------------
 
-local function handle_call(id, params)
+local function handle_call(id, params, scope)
     local tool_name = params.name
     local arguments = params.arguments or {}
 
@@ -75,7 +80,7 @@ local function handle_call(id, params)
         return jsonrpc.invalid_params(id, "Missing tool name")
     end
 
-    local tools, err = discover()
+    local tools, err = discover(scope)
     if err then
         return jsonrpc.internal_error(id, "Failed to discover tools: " .. tostring(err))
     end
@@ -116,15 +121,15 @@ end
 -- Top-level dispatch for tool methods
 ---------------------------------------------------------------------------
 
-local function handle(msg)
+local function handle(msg, scope)
     if msg.kind ~= "request" then
         return nil
     end
 
     if msg.method == "tools/list" then
-        return handle_list(msg.id, msg.params or {})
+        return handle_list(msg.id, msg.params or {}, scope)
     elseif msg.method == "tools/call" then
-        return handle_call(msg.id, msg.params or {})
+        return handle_call(msg.id, msg.params or {}, scope)
     end
 
     return nil
