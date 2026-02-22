@@ -13,7 +13,7 @@ local jsonrpc = require("jsonrpc")
 -- Prompt discovery from registry
 ---------------------------------------------------------------------------
 
-local function discover()
+local function discover(scope)
     local entries, err = registry.find({kind = "function.lua"})
     if err then
         return nil, err
@@ -23,17 +23,22 @@ local function discover()
     for _, entry in ipairs(entries) do
         local meta = entry.meta
         if meta and meta["mcp.prompt"] == true then
-            local name = meta["mcp.prompt.name"] or entry.id
-            prompts[name] = {
-                entry_id = entry.id,
-                name = name,
-                description = meta["mcp.prompt.description"],
-                prompt_type = meta["mcp.prompt.type"] or "prompt",
-                tags = meta["mcp.prompt.tags"],
-                arguments = meta["mcp.prompt.arguments"],
-                messages = meta["mcp.prompt.messages"],
-                extend = meta["mcp.prompt.extend"],
-            }
+            -- Scope filter: scoped prompts only visible on matching endpoints
+            if meta["mcp.scope"] and meta["mcp.scope"] ~= scope then
+                -- skip: prompt has a scope that doesn't match this endpoint
+            else
+                local name = meta["mcp.prompt.name"] or entry.id
+                prompts[name] = {
+                    entry_id = entry.id,
+                    name = name,
+                    description = meta["mcp.prompt.description"],
+                    prompt_type = meta["mcp.prompt.type"] or "prompt",
+                    tags = meta["mcp.prompt.tags"],
+                    arguments = meta["mcp.prompt.arguments"],
+                    messages = meta["mcp.prompt.messages"],
+                    extend = meta["mcp.prompt.extend"],
+                }
+            end
         end
     end
 
@@ -117,8 +122,8 @@ end
 -- prompts/list handler
 ---------------------------------------------------------------------------
 
-local function handle_list(id, params)
-    local prompts, err = discover()
+local function handle_list(id, params, scope)
+    local prompts, err = discover(scope)
     if err then
         return jsonrpc.internal_error(id, "Failed to discover prompts: " .. tostring(err))
     end
@@ -157,7 +162,7 @@ end
 -- prompts/get handler
 ---------------------------------------------------------------------------
 
-local function handle_get(id, params)
+local function handle_get(id, params, scope)
     local prompt_name = params.name
     local arguments = params.arguments or {}
 
@@ -165,7 +170,7 @@ local function handle_get(id, params)
         return jsonrpc.invalid_params(id, "Missing prompt name")
     end
 
-    local prompts, err = discover()
+    local prompts, err = discover(scope)
     if err then
         return jsonrpc.internal_error(id, "Failed to discover prompts: " .. tostring(err))
     end
@@ -214,15 +219,15 @@ end
 -- Top-level dispatch for prompt methods
 ---------------------------------------------------------------------------
 
-local function handle(msg)
+local function handle(msg, scope)
     if msg.kind ~= "request" then
         return nil
     end
 
     if msg.method == "prompts/list" then
-        return handle_list(msg.id, msg.params or {})
+        return handle_list(msg.id, msg.params or {}, scope)
     elseif msg.method == "prompts/get" then
-        return handle_get(msg.id, msg.params or {})
+        return handle_get(msg.id, msg.params or {}, scope)
     end
 
     return nil

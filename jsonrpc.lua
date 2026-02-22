@@ -69,23 +69,8 @@ end
 -- Decoding: JSON string → classified table
 ---------------------------------------------------------------------------
 
---- Decode a JSON-RPC line and classify it
-local function decode(line)
-    local data, err = json.decode(line)
-    if err then
-        return {
-            kind = "invalid",
-            error = "Parse error: " .. tostring(err)
-        }
-    end
-
-    if type(data) ~= "table" then
-        return {
-            kind = "invalid",
-            error = "Expected JSON object, got " .. type(data)
-        }
-    end
-
+--- Classify a pre-parsed JSON-RPC table (validates and tags as request/notification/invalid)
+local function classify(data)
     if data.jsonrpc ~= JSONRPC_VERSION then
         return {
             kind = "invalid",
@@ -124,6 +109,26 @@ local function decode(line)
             params = params
         }
     end
+end
+
+--- Decode a JSON-RPC line and classify it
+local function decode(line)
+    local data, err = json.decode(line)
+    if err then
+        return {
+            kind = "invalid",
+            error = "Parse error: " .. tostring(err)
+        }
+    end
+
+    if type(data) ~= "table" then
+        return {
+            kind = "invalid",
+            error = "Expected JSON object, got " .. type(data)
+        }
+    end
+
+    return classify(data)
 end
 
 ---------------------------------------------------------------------------
@@ -172,6 +177,7 @@ return {
     encode_notification = encode_notification,
 
     decode = decode,
+    classify = classify,
 
     parse_error = parse_error,
     invalid_request = invalid_request,

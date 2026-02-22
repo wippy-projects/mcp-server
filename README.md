@@ -1,7 +1,7 @@
 # MCP Server for Wippy
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) server that runs as a Wippy process, communicates over
-stdio, and exposes tools and prompts to LLM clients (Claude Desktop, MCP Inspector, etc.).
+A [Model Context Protocol](https://modelcontextprotocol.io/) server that runs as a Wippy module, communicates over
+stdio or HTTP, and exposes tools and prompts to LLM clients (Claude Desktop, MCP Inspector, etc.).
 
 Tools and prompts are **registry-native** — declared as standard Wippy `function.lua` entries with metadata and
 discovered automatically. Adding a tool or prompt requires only a YAML entry and (optionally) a Lua handler. No server
@@ -9,9 +9,13 @@ code changes.
 
 ## Quick Start
 
+### Stdio Transport
+
 ```bash
 wippy run -s -x mcp:server
 ```
+
+The `-s` (silent) flag is **required** — it suppresses runtime logs so they don't corrupt the JSON-RPC stream.
 
 Test with MCP Inspector:
 
@@ -19,65 +23,30 @@ Test with MCP Inspector:
 npx @modelcontextprotocol/inspector wippy run -s -x mcp:server
 ```
 
-### Claude Desktop Configuration
+### HTTP Transport
 
-**Linux / macOS:**
+Add the MCP server as a dependency and wire it to your HTTP router:
 
-```json
-{
-  "mcpServers": {
-    "wippy": {
-      "command": "wippy",
-      "args": ["run", "-s", "-x", "mcp:server"],
-      "cwd": "/path/to/project"
-    }
-  }
-}
+```yaml
+- name: dep.mcp
+  kind: ns.dependency
+  component: butschster/mcp-server
+  version: "*"
+  parameters:
+    - name: router
+      value: app:api
 ```
 
-**Windows (via WSL / bash):**
+The MCP endpoint is registered at `/mcp` on your router (e.g., `/api/mcp` if your router has `prefix: /api`).
 
-```json
-{
-  "mcpServers": {
-    "wippy": {
-      "command": "bash.exe",
-      "args": ["-c", "cd /path/to/project && wippy run -s -x mcp:server"]
-    }
-  }
-}
-```
-
-### CLI Flags
-
-| Flag              | Purpose                                                                                     |
-|-------------------|---------------------------------------------------------------------------------------------|
-| `-s` / `--silent` | **Required.** Suppresses runtime logs from stdout so they don't corrupt the JSON-RPC stream |
-| `-x mcp:server`   | Execute the server process on the terminal host                                             |
-
-### Supported MCP Methods
-
-| Method                      | Type         | Description                            |
-|-----------------------------|--------------|----------------------------------------|
-| `initialize`                | request      | Handshake, returns server capabilities |
-| `notifications/initialized` | notification | Client confirms initialization         |
-| `ping`                      | request      | Health check, returns `{}`             |
-| `tools/list`                | request      | List all discovered tools              |
-| `tools/call`                | request      | Invoke a tool by name                  |
-| `prompts/list`              | request      | List all discovered prompts            |
-| `prompts/get`               | request      | Get prompt messages by name            |
-
----
+See [HTTP Transport docs](docs/http-transport.md) for session lifecycle and curl examples.
 
 ## Adding Tools
 
-Tools are standard Wippy `function.lua` entries. The server discovers them automatically via registry metadata — no
-server code changes required.
-
-### 1. Create the handler
+Create a Lua handler and register it in `_index.yaml`:
 
 ```lua
--- src/mytools/tools/greet.lua
+-- tools/greet.lua
 local function call(arguments)
     local name = arguments.name or "World"
     return "Hello, " .. name .. "!"
@@ -85,13 +54,6 @@ end
 
 return { call = call }
 ```
-
-The function receives an `arguments` table and returns either:
-
-- A **string** — wrapped in `{type: "text", text: "..."}` automatically
-- A **table with `.content`** — passed through as-is (for multi-content responses)
-
-### 2. Register in `_index.yaml`
 
 ```yaml
 - name: greet
@@ -110,38 +72,18 @@ The function receives an `arguments` table and returns either:
           description: "Name to greet"
       required:
         - "name"
-    mcp.annotations:
-      readOnlyHint: true
 ```
 
-### Tool Metadata Reference
-
-| Meta field        | Required | Description                                                                 |
-|-------------------|----------|-----------------------------------------------------------------------------|
-| `mcp.tool`        | yes      | Must be `true` for discovery                                                |
-| `mcp.name`        | yes      | Tool name exposed to clients                                                |
-| `mcp.description` | no       | Human-readable description                                                  |
-| `mcp.inputSchema` | no       | JSON Schema for `arguments` validation                                      |
-| `mcp.annotations` | no       | Hints: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint` |
-
----
+See [Tools docs](docs/tools.md) for metadata reference, annotations, error handling, and using Wippy modules.
 
 ## Adding Prompts
 
-Prompts are reusable message templates exposed to LLM clients. Like tools, they are declared as `function.lua` entries
-with `mcp.prompt` metadata. The server discovers them automatically.
-
-There are three ways to define prompts:
-
-### Static Prompts (messages in YAML only)
-
-Messages are defined entirely in meta. The Lua handler is never called — it exists only because Wippy requires a source
-file for `function.lua` entries. Use a shared placeholder file.
+Prompts support three modes: static (YAML messages), dynamic (Lua handler), and template inheritance.
 
 ```yaml
 - name: greeting
   kind: function.lua
-  source: file://prompts/static.lua    # placeholder, never called
+  source: file://prompts/static.lua
   method: get
   meta:
     mcp.prompt: true
@@ -151,237 +93,47 @@ file for `function.lua` entries. Use a shared placeholder file.
       - name: "name"
         description: "Name of the person to greet"
         required: true
-      - name: "style"
-        description: "Greeting style (formal, casual, friendly)"
-        required: false
     mcp.prompt.messages:
       - role: "user"
-        content: "Please greet {{name}} in a {{style}} style."
+        content: "Please greet {{name}}."
 ```
 
-The `{{name}}` and `{{style}}` placeholders are substituted with argument values at request time.
+See [Prompts docs](docs/prompts.md) for dynamic prompts, template inheritance, and metadata reference.
 
-### Dynamic Prompts (custom Lua handler)
+## Supported MCP Methods
 
-For prompts that need logic, computation, or conditional messages, implement a handler function:
+| Method                      | Type         | Description                            |
+|-----------------------------|--------------|----------------------------------------|
+| `initialize`                | request      | Handshake, returns server capabilities |
+| `notifications/initialized` | notification | Client confirms initialization         |
+| `ping`                      | request      | Health check, returns `{}`             |
+| `tools/list`                | request      | List all discovered tools              |
+| `tools/call`                | request      | Invoke a tool by name                  |
+| `prompts/list`              | request      | List all discovered prompts            |
+| `prompts/get`               | request      | Get prompt messages by name            |
 
-```lua
--- prompts/code_review.lua
-local function get(arguments)
-    local code = arguments.code or ""
-    local language = arguments.language or "unknown"
+## Documentation
 
-    return {
-        messages = {
-            {
-                role = "user",
-                content = {
-                    type = "text",
-                    text = "Please review this " .. language .. " code:\n\n```\n" .. code .. "\n```"
-                }
-            }
-        }
-    }
-end
+| Document                                   | Description                                        |
+|--------------------------------------------|----------------------------------------------------|
+| [Stdio Transport](docs/stdio-transport.md) | Running via stdio, Claude Desktop configuration    |
+| [HTTP Transport](docs/http-transport.md)   | Session lifecycle, host app setup, curl examples   |
+| [Tools](docs/tools.md)                     | Creating tools, metadata reference, error handling |
+| [Prompts](docs/prompts.md)                 | Static, dynamic, and template prompts              |
+| [Scope Filtering](docs/scope-filtering.md) | Multi-endpoint visibility control                  |
+| [Architecture](docs/architecture.md)       | Module design, dispatch chain, dependency graph    |
 
-return { get = get }
-```
+### Examples
 
-```yaml
-- name: code_review
-  kind: function.lua
-  source: file://prompts/code_review.lua
-  method: get
-  meta:
-    mcp.prompt: true
-    mcp.prompt.name: "code_review"
-    mcp.prompt.description: "Review code quality and suggest improvements"
-    mcp.prompt.arguments:
-      - name: "code"
-        description: "The code to review"
-        required: true
-      - name: "language"
-        description: "Programming language"
-        required: false
-```
+| Example                                               | Description                                 |
+|-------------------------------------------------------|---------------------------------------------|
+| [Basic Tools](docs/examples/basic-tools.md)           | Minimal app with three simple tools         |
+| [HTTP App](docs/examples/http-app.md)                 | HTTP server with MCP endpoint               |
+| [Multi-Endpoint](docs/examples/multi-endpoint-app.md) | Admin vs. public tools with scope filtering |
+| [Prompts App](docs/examples/prompts-app.md)           | Static, dynamic, and template prompts       |
 
-Dynamic prompts are called via `funcs.call()` — they have no `mcp.prompt.messages` or `mcp.prompt.extend` in meta.
-
-### Template Inheritance (extend)
-
-Prompts can extend templates to inherit and compose messages. Templates are prompts with `type: "template"` — they
-don't appear in `prompts/list` but can be referenced by other prompts.
-
-```yaml
-# Template (not listed, acts as base)
-- name: base_instruction
-  kind: function.lua
-  source: file://prompts/static.lua
-  method: get
-  meta:
-    mcp.prompt: true
-    mcp.prompt.name: "base_instruction"
-    mcp.prompt.type: "template"
-    mcp.prompt.messages:
-      - role: "user"
-        content: "You are a helpful {{role}} assistant. {{instruction}}"
-
-# Prompt that extends the template
-- name: coding_assistant
-  kind: function.lua
-  source: file://prompts/static.lua
-  method: get
-  meta:
-    mcp.prompt: true
-    mcp.prompt.name: "coding_assistant"
-    mcp.prompt.description: "Get coding assistance from a senior developer"
-    mcp.prompt.extend:
-      - id: "base_instruction"
-        arguments:
-          role: "senior software developer"
-          instruction: "Help the user with their coding question."
-    mcp.prompt.arguments:
-      - name: "question"
-        description: "The coding question"
-        required: true
-    mcp.prompt.messages:
-      - role: "user"
-        content: "Question: {{question}}"
-```
-
-When `coding_assistant` is retrieved, the resolved messages are:
-1. `"You are a helpful senior software developer assistant. Help the user with their coding question."` (from template)
-2. `"Question: <user's question>"` (from prompt)
-
-Multi-level inheritance is supported — templates can extend other templates.
-
-### Prompt Metadata Reference
-
-| Meta field                | Required | Description                                                    |
-|---------------------------|----------|----------------------------------------------------------------|
-| `mcp.prompt`              | yes      | Must be `true` for discovery                                   |
-| `mcp.prompt.name`         | yes      | Prompt name exposed to clients                                 |
-| `mcp.prompt.description`  | no       | Human-readable description                                     |
-| `mcp.prompt.type`         | no       | `"prompt"` (default) or `"template"` (hidden from list)        |
-| `mcp.prompt.tags`         | no       | Tags for organization/filtering                                |
-| `mcp.prompt.arguments`    | no       | List of `{name, description, required}` argument definitions   |
-| `mcp.prompt.messages`     | no*      | Static messages with `{role, content}` and `{{arg}}` templates |
-| `mcp.prompt.extend`       | no       | List of `{id, arguments}` template references to inherit       |
-
-\* Either `messages`/`extend` (static) or neither (dynamic, handler called via `funcs.call()`).
-
-### Example Prompts
-
-Four demo prompts are included in `src/examples/`:
-
-**greeting** — static prompt with argument substitution:
-```
-prompts/get → {"name": "greeting", "arguments": {"name": "Alice", "style": "friendly"}}
-           ← messages: ["Please greet Alice in a friendly style."]
-```
-
-**coding_assistant** — static prompt with template inheritance:
-```
-prompts/get → {"name": "coding_assistant", "arguments": {"question": "How do I sort a list?"}}
-           ← messages: ["You are a helpful senior software developer...", "Question: How do I sort a list?"]
-```
-
-**code_review** — dynamic prompt with custom Lua handler:
-```
-prompts/get → {"name": "code_review", "arguments": {"code": "def hello(): ...", "language": "python"}}
-           ← messages: ["Please review this python code: ..."]
-```
-
----
-
-## Architecture
-
-### Dispatch Flow
-
-```
-stdin ──▶ server.lua ──▶ jsonrpc.decode() ──▶ protocol.handle()
-                                                 │
-                                          ┌──────┴──────┐
-                                          │ handled?    │
-                                          │ (initialize,│
-                                          │  ping)      │
-                                          └──────┬──────┘
-                                            no   │   yes ──▶ stdout
-                                                 ▼
-                                            tools.handle()
-                                                 │
-                                          ┌──────┴──────┐
-                                          │ handled?    │
-                                          │ (tools/list,│
-                                          │  tools/call)│
-                                          └──────┬──────┘
-                                            no   │   yes ──▶ stdout
-                                                 ▼
-                                           prompts.handle()
-                                                 │
-                                          ┌──────┴──────┐
-                                          │ handled?      │
-                                          │ (prompts/list,│
-                                          │  prompts/get) │
-                                          └──────┬────────┘
-                                            no   │   yes ──▶ stdout
-                                                 ▼
-                                          METHOD_NOT_FOUND ──▶ stdout
-```
-
-### Module Dependency Graph
-
-```
-server.lua (process.lua)
-├── imports: jsonrpc   ← mcp:jsonrpc
-├── imports: protocol  ← mcp:protocol    ── imports: jsonrpc
-├── imports: tools     ← mcp:tools_lib   ── imports: jsonrpc, modules: registry, funcs
-└── imports: prompts   ← mcp:prompts_lib ── imports: jsonrpc, modules: registry, funcs
-```
-
-### Project Structure
-
-```
-src/mcp/
-├── _index.yaml      Registry: terminal.host, libraries, server process
-├── jsonrpc.lua      JSON-RPC 2.0 codec (encode/decode/error helpers)
-├── protocol.lua     MCP handshake state machine (initialize → ready)
-├── tools.lua        Tool discovery via registry + tools/list & tools/call dispatch
-├── prompts.lua      Prompt discovery via registry + prompts/list & prompts/get dispatch
-├── server.lua       Main process: stdin loop → dispatch chain → stdout
-└── README.md
-
-src/examples/        Demo tools & prompts (separate namespace, zero coupling to server)
-├── _index.yaml      Tool + prompt entries with MCP metadata
-├── tools/
-│   ├── weather.lua
-│   └── echo.lua
-└── prompts/
-    ├── static.lua       Placeholder handler for YAML-only prompts
-    └── code_review.lua  Dynamic prompt with custom logic
-```
-
-### Modules
-
-**jsonrpc.lua** — JSON-RPC 2.0 codec. No MCP-specific logic.
-
-**protocol.lua** — MCP connection lifecycle. State machine: `disconnected` → `ready`. Advertises `tools` and `prompts`
-capabilities.
-
-**tools.lua** — Tool discovery and dispatch via Wippy's registry. `discover()` finds entries where
-`meta["mcp.tool"] == true`. Tool errors are returned as `isError: true` per MCP spec.
-
-**prompts.lua** — Prompt discovery and dispatch via Wippy's registry. `discover()` finds entries where
-`meta["mcp.prompt"] == true`. Supports static messages (from meta), dynamic messages (from handler), template
-inheritance (`extend`), and `{{argument}}` substitution. Templates (`type: "template"`) are hidden from `prompts/list`.
-
-**server.lua** — Main process. Reads stdin line by line, dispatches through jsonrpc → protocol → tools → prompts chain.
-
-### Protocol Details
+## Protocol Details
 
 - **MCP version**: `2025-06-18`
-- **Transport**: stdio (newline-delimited JSON)
-- **Capabilities advertised**: `tools` and `prompts` (both with `listChanged: false`)
-- **Tool errors**: Returned as `isError: true` in `CallToolResult`, not as JSON-RPC errors
-- **Empty object encoding**: Wippy's `json.encode({})` produces `[]`. The jsonrpc module applies a `string.gsub`
-  workaround to fix `"result":[]` → `"result":{}` for ping and capabilities.
+- **Transports**: stdio (newline-delimited JSON), HTTP (Streamable HTTP)
+- **Capabilities**: `tools` and `prompts` (both with `listChanged: false`)

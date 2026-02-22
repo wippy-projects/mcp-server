@@ -7,7 +7,7 @@ entries:
     readme: file://README.md
     meta:
       title: MCP Server
-      description: MCP (Model Context Protocol) server for Wippy — exposes tools to LLM clients over stdio
+      description: MCP (Model Context Protocol) server for Wippy — exposes tools to LLM clients over stdio and HTTP
 
   - name: dependency.terminal
     kind: ns.dependency
@@ -52,7 +52,16 @@ entries:
     imports:
       jsonrpc: mcp:jsonrpc
 
-  # --- Server process ---
+  - name: handler_lib
+    kind: library.lua
+    source: file://handler.lua
+    imports:
+      jsonrpc: mcp:jsonrpc
+      protocol: mcp:protocol
+      tools: mcp:tools_lib
+      prompts: mcp:prompts_lib
+
+  # --- Server process (stdio transport) ---
 
   - name: server
     kind: process.lua
@@ -62,6 +71,57 @@ entries:
       - io
     imports:
       jsonrpc: mcp:jsonrpc
-      protocol: mcp:protocol
-      tools: mcp:tools_lib
-      prompts: mcp:prompts_lib
+      handler: mcp:handler_lib
+
+  # --- HTTP transport (Streamable HTTP) ---
+
+  # Router requirement — host app provides their router
+  - name: router
+    kind: ns.requirement
+    meta:
+      description: HTTP router for MCP endpoints
+    default: app:api.public
+    targets:
+      - entry: mcp:sse_endpoint_post
+        path: meta.router
+      - entry: mcp:sse_endpoint_get
+        path: meta.router
+      - entry: mcp:sse_endpoint_delete
+        path: meta.router
+
+  # HTTP handler function
+  - name: sse_handler_fn
+    kind: function.lua
+    source: file://sse_handler.lua
+    method: handler
+    modules:
+      - http
+      - json
+    imports:
+      handler: mcp:handler_lib
+      jsonrpc: mcp:jsonrpc
+
+  # MCP HTTP endpoints (one per method, same path)
+  - name: sse_endpoint_post
+    kind: http.endpoint
+    meta:
+      router: app:api.public
+    method: POST
+    path: /mcp
+    func: mcp:sse_handler_fn
+
+  - name: sse_endpoint_get
+    kind: http.endpoint
+    meta:
+      router: app:api.public
+    method: GET
+    path: /mcp
+    func: mcp:sse_handler_fn
+
+  - name: sse_endpoint_delete
+    kind: http.endpoint
+    meta:
+      router: app:api.public
+    method: DELETE
+    path: /mcp
+    func: mcp:sse_handler_fn
