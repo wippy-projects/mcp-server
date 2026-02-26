@@ -49,25 +49,29 @@ Each handler returns a response string if it handled the request, or `nil` to pa
 |-------------------|--------------|--------------------------------------------------------------------------------------------|
 | `jsonrpc.lua`     | library.lua  | JSON-RPC 2.0 codec. `decode()` from string, `classify()` from parsed table. No MCP logic.  |
 | `protocol.lua`    | library.lua  | MCP lifecycle state machine: `disconnected` → `ready`. Handles `initialize`, `ping`.       |
-| `handler.lua`     | library.lua  | Shared dispatch chain + session management. Each session gets its own protocol instance.   |
+| `emitter.lua`     | library.lua  | Event emission via Wippy event bus. Standardizes session_id, scope, timestamp on all events.|
+| `handler.lua`     | library.lua  | Shared dispatch chain + session management. Emits business events (tool.called, ping, etc).|
 | `tools.lua`       | library.lua  | Tool discovery via registry (`mcp.tool == true`). Handles `tools/list` and `tools/call`.   |
 | `prompts.lua`     | library.lua  | Prompt discovery via registry (`mcp.prompt == true`). Static, dynamic, and template modes. |
-| `server.lua`      | process.lua  | Stdio transport. Reads stdin, dispatches via handler, writes to stdout.                    |
-| `sse_handler.lua` | function.lua | HTTP transport. Handles POST/GET/DELETE, manages `Mcp-Session-Id` header.                  |
+| `server.lua`      | process.lua  | Stdio transport. Reads stdin, dispatches via handler, writes to stdout. Emits session events.|
+| `sse_handler.lua` | function.lua | HTTP transport. Handles POST/GET/DELETE, manages `Mcp-Session-Id` header. Emits session events.|
 
 ## Dependency Graph
 
 ```
 server.lua (process.lua)
 ├── jsonrpc  ← mcp:jsonrpc
+├── emitter  ← mcp:emitter       ── events, time
 └── handler  ← mcp:handler_lib
     ├── jsonrpc   ← mcp:jsonrpc
     ├── protocol  ← mcp:protocol    ── jsonrpc
-    ├── tools     ← mcp:tools_lib   ── jsonrpc, registry, funcs
-    └── prompts   ← mcp:prompts_lib ── jsonrpc, registry, funcs
+    ├── tools     ← mcp:tools_lib   ── jsonrpc, registry, funcs, time
+    ├── prompts   ← mcp:prompts_lib ── jsonrpc, registry, funcs
+    └── emitter   ← mcp:emitter     ── events, time
 
 sse_handler.lua (function.lua)
 ├── jsonrpc  ← mcp:jsonrpc
+├── emitter  ← mcp:emitter       ── events, time
 └── handler  ← mcp:handler_lib (same tree)
 ```
 
@@ -97,6 +101,55 @@ Tools and prompts are declared as `function.lua` entries in any namespace's `_in
 discovers them via `registry.find({kind = "function.lua"})` and checks for `meta["mcp.tool"]` or `meta["mcp.prompt"]`.
 
 This means adding a tool or prompt requires **no server code changes** — only a YAML entry and optionally a Lua handler.
+
+## Event Emission
+
+The MCP server emits structured events via Wippy's event bus (`events.send()`) under the system name `"mcp"`.
+This enables external consumers (metrics, dashboards, audit logs) to observe server activity without coupling
+to internal code.
+
+### Event Flow
+
+```
+Transport (sse_handler / server)          Handler (dispatch chain)
+├── session.created                       ├── protocol.initialized
+└── session.destroyed                     ├── tool.called (with duration_ms)
+                                          ├── prompt.get
+                                          └── ping
+```
+
+### Emitter Library
+
+All events pass through `emitter.lua`, which standardizes every event with:
+- `session_id` — which session produced the event
+- `scope` — handler scope (for multi-endpoint setups)
+- `timestamp` — Unix timestamp of emission
+
+### Subscribing to Events
+
+```lua
+local events = require("events")
+
+-- All MCP events
+local sub = events.subscribe("mcp.*")
+
+-- Only session lifecycle
+local sub = events.subscribe("mcp.session.*")
+
+-- Only tool calls
+local sub = events.subscribe("mcp.tool.*")
+```
+
+### Event Catalog
+
+| Kind | Source | Path Pattern | Key Data Fields |
+|---|---|---|---|
+| `session.created` | transport | `/sessions/{id}` | transport, client_ip, user_agent |
+| `session.destroyed` | transport | `/sessions/{id}` | transport, reason |
+| `protocol.initialized` | handler | `/sessions/{id}` | client_name, client_version |
+| `tool.called` | handler | `/sessions/{id}/tools/{name}` | tool_name, duration_ms, success, error |
+| `prompt.get` | handler | `/sessions/{id}/prompts/{name}` | prompt_name |
+| `ping` | handler | `/sessions/{id}` | — |
 
 ## Protocol Details
 

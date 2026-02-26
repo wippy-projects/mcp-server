@@ -8,9 +8,14 @@ local http = require("http")
 local json = require("json")
 local jsonrpc = require("jsonrpc")
 local handler = require("handler")
+local emitter = require("emitter")
+local logger = require("logger")
+
+local log = logger:named("mcp.http")
 
 -- Shared handler instance (created on first request)
 local h = nil
+local emit = nil
 local session_counter = 0
 
 --- Generate a new session ID
@@ -32,6 +37,10 @@ local function get_handler()
         capabilities = { tools = true, prompts = true }
     })
 
+    emit = emitter.new(h.config.scope)
+
+    log:info("handler initialized")
+
     return h
 end
 
@@ -46,6 +55,8 @@ local function handle_post(req, res)
     -- Parse JSON body
     local data, parse_err = req:body_json()
     if parse_err or not data or type(data) ~= "table" then
+        log:debug("invalid JSON body in POST request")
+        res:set_header("Content-Type", "application/json")
         res:set_status(400)
         return res:write_json({error = "Invalid JSON body"})
     end
@@ -60,16 +71,56 @@ local function handle_post(req, res)
         -- New session
         session_id = new_session_id()
         mcp:create_session(session_id)
+
+        -- Emit session.created event (include clientInfo since handler events don't propagate)
+        local client_ip = req:header("X-Forwarded-For") or req:header("X-Real-Ip")
+        local user_agent = req:header("User-Agent")
+        local params = msg.params or {}
+        local client_info = params.clientInfo or {}
+        emit:emit("session.created", session_id, "/sessions/" .. session_id, {
+            transport = "http",
+            client_ip = client_ip,
+            user_agent = user_agent,
+            client_name = client_info.name,
+            client_version = client_info.version
+        })
+
+        log:info("new session", {
+            session_id = session_id,
+            client_ip = client_ip,
+            user_agent = user_agent
+        })
     else
         -- Existing session — read from header
         session_id = req:header("Mcp-Session-Id")
         if not session_id or not mcp:get_session(session_id) then
+            -- For notifications, accept gracefully even without session ID.
+            -- Some clients send notifications/initialized before processing
+            -- the initialize response (race condition).
+            if msg.kind == "notification" then
+                log:debug("notification without valid session, accepting", {method = msg.method})
+                res:set_status(202)
+                return
+            end
+
+            log:debug("invalid or missing session header", {session_id = session_id})
+            res:set_header("Content-Type", "application/json")
             res:set_status(400)
             return res:write_json({error = "Missing or invalid Mcp-Session-Id header"})
         end
     end
 
+    -- Emit tool.called event BEFORE dispatch (events.send fails after funcs.call inside dispatch)
+    if msg.kind == "request" and msg.method == "tools/call" then
+        local tool_name = (msg.params or {}).name or "unknown"
+        emit:emit("tool.called", session_id,
+            "/sessions/" .. session_id .. "/tools/" .. tool_name, {
+                tool_name = tool_name
+            })
+    end
+
     -- Dispatch through handler chain
+    log:debug("dispatching", {session_id = session_id, method = msg.method})
     local response = mcp:dispatch(session_id, msg)
 
     if response then
@@ -81,15 +132,32 @@ local function handle_post(req, res)
         res:set_header("Content-Type", "application/json")
         res:write(response)
     else
-        -- Notification — no response body
-        res:set_status(204)
+        -- Notification — no response body (MCP spec: 202 Accepted)
+        res:set_status(202)
     end
 end
 
---- Handle GET: SSE stream (not yet implemented)
+--- Handle GET: SSE stream
+--- Delegates to the SSE relay middleware for a long-lived connection.
+--- The relay sends automatic heartbeat keepalives and manages the lifecycle.
 local function handle_get(req, res)
-    res:set_status(405)
-    res:write_json({error = "SSE streaming not yet supported"})
+    local mcp = get_handler()
+
+    local session_id = req:header("Mcp-Session-Id")
+    if not session_id or not mcp:get_session(session_id) then
+        res:set_header("Content-Type", "application/json")
+        res:set_status(400)
+        return res:write_json({error = "Missing or invalid Mcp-Session-Id header"})
+    end
+
+    log:info("SSE stream opened", {session_id = session_id})
+
+    -- Delegate to SSE relay middleware (detached mode — no target process needed).
+    -- The relay keeps the connection open with automatic heartbeats.
+    res:set_header("X-SSE-Relay", json.encode({
+        heartbeat_interval = "15s",
+        idle_timeout = "30m",
+    }))
 end
 
 --- Handle DELETE: close session
@@ -98,14 +166,22 @@ local function handle_delete(req, res)
 
     local session_id = req:header("Mcp-Session-Id")
     if not session_id then
+        res:set_header("Content-Type", "application/json")
         res:set_status(400)
         return res:write_json({error = "Missing Mcp-Session-Id header"})
     end
 
     if not mcp:get_session(session_id) then
+        res:set_header("Content-Type", "application/json")
         res:set_status(404)
         return res:write_json({error = "Session not found"})
     end
+
+    -- Emit session.destroyed event before deleting
+    emit:emit("session.destroyed", session_id, "/sessions/" .. session_id, {
+        transport = "http",
+        reason = "client_delete"
+    })
 
     mcp:delete_session(session_id)
     res:set_status(200)
@@ -128,6 +204,7 @@ local function handler_fn()
     elseif method == "DELETE" then
         handle_delete(req, res)
     else
+        res:set_header("Content-Type", "application/json")
         res:set_status(405)
         res:write_json({error = "Method not allowed"})
     end

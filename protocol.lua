@@ -3,6 +3,9 @@
 -- Entry kind: library.lua
 
 local jsonrpc = require("jsonrpc")
+local logger = require("logger")
+
+local log = logger:named("mcp.protocol")
 
 -- MCP protocol version
 local PROTOCOL_VERSION = "2025-06-18"
@@ -53,6 +56,7 @@ local function new_server(config)
     -- Handle initialize request
     local function handle_initialize(msg)
         if server.state ~= STATE_DISCONNECTED then
+            log:warn("initialize rejected: already initialized")
             return jsonrpc.encode_error(
                 msg.id, jsonrpc.INVALID_REQUEST,
                 "Server already initialized"
@@ -62,6 +66,11 @@ local function new_server(config)
         local params = msg.params or {}
         server.client_info = params.clientInfo
         server.state = STATE_READY
+
+        log:info("initialized", {
+            client_name = server.client_info and server.client_info.name,
+            client_version = server.client_info and server.client_info.version
+        })
 
         return jsonrpc.encode_response(msg.id, build_init_result())
     end
@@ -74,11 +83,13 @@ local function new_server(config)
     -- Handle ping
     local function handle_ping(msg)
         if server.state ~= STATE_READY then
+            log:warn("ping rejected: not initialized")
             return jsonrpc.encode_error(
                 msg.id, jsonrpc.INVALID_REQUEST,
                 "Server not initialized"
             )
         end
+        log:debug("ping received")
         return jsonrpc.encode_response(msg.id, {})
     end
 
@@ -86,6 +97,7 @@ local function new_server(config)
     function server.handle(msg)
         if msg.kind == "notification" then
             if msg.method == "notifications/initialized" then
+                log:debug("client confirmed initialized")
                 return handle_initialized(msg)
             end
             return nil
@@ -97,6 +109,7 @@ local function new_server(config)
             end
 
             if server.state ~= STATE_READY then
+                log:warn("request rejected: not initialized", {method = msg.method})
                 return jsonrpc.encode_error(
                     msg.id, jsonrpc.INVALID_REQUEST,
                     "Server not initialized"
@@ -112,6 +125,7 @@ local function new_server(config)
         end
 
         if msg.kind == "invalid" then
+            log:warn("invalid message received", {error = msg.error})
             return jsonrpc.parse_error(nil, msg.error or "Invalid message")
         end
 

@@ -8,6 +8,9 @@
 local registry = require("registry")
 local funcs = require("funcs")
 local jsonrpc = require("jsonrpc")
+local logger = require("logger")
+
+local log = logger:named("mcp.prompts")
 
 ---------------------------------------------------------------------------
 -- Prompt discovery from registry
@@ -16,10 +19,12 @@ local jsonrpc = require("jsonrpc")
 local function discover(scope)
     local entries, err = registry.find({kind = "function.lua"})
     if err then
+        log:error("prompt discovery failed", {error = tostring(err)})
         return nil, err
     end
 
     local prompts = {}
+    local count = 0
     for _, entry in ipairs(entries) do
         local meta = entry.meta
         if meta and meta["mcp.prompt"] == true then
@@ -38,9 +43,12 @@ local function discover(scope)
                     messages = meta["mcp.prompt.messages"],
                     extend = meta["mcp.prompt.extend"],
                 }
+                count = count + 1
             end
         end
     end
+
+    log:debug("prompts discovered", {count = count, scope = scope})
 
     return prompts, nil
 end
@@ -170,6 +178,8 @@ local function handle_get(id, params, scope)
         return jsonrpc.invalid_params(id, "Missing prompt name")
     end
 
+    log:debug("getting prompt", {prompt = prompt_name})
+
     local prompts, err = discover(scope)
     if err then
         return jsonrpc.internal_error(id, "Failed to discover prompts: " .. tostring(err))
@@ -177,6 +187,7 @@ local function handle_get(id, params, scope)
 
     local prompt = prompts[prompt_name]
     if not prompt then
+        log:warn("unknown prompt requested", {prompt = prompt_name})
         return jsonrpc.invalid_params(id, "Unknown prompt: " .. prompt_name)
     end
 

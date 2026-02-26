@@ -34,12 +34,21 @@ entries:
     imports:
       jsonrpc: mcp:jsonrpc
 
+  - name: emitter
+    kind: library.lua
+    source: file://emitter.lua
+    modules:
+      - events
+      - time
+      - logger
+
   - name: tools_lib
     kind: library.lua
     source: file://tools.lua
     modules:
       - registry
       - funcs
+      - time
     imports:
       jsonrpc: mcp:jsonrpc
 
@@ -60,6 +69,7 @@ entries:
       protocol: mcp:protocol
       tools: mcp:tools_lib
       prompts: mcp:prompts_lib
+      emitter: mcp:emitter
 
   # --- Server process (stdio transport) ---
 
@@ -72,6 +82,7 @@ entries:
     imports:
       jsonrpc: mcp:jsonrpc
       handler: mcp:handler_lib
+      emitter: mcp:emitter
 
   # --- HTTP transport (Streamable HTTP) ---
 
@@ -97,9 +108,11 @@ entries:
     modules:
       - http
       - json
+      - logger
     imports:
       handler: mcp:handler_lib
       jsonrpc: mcp:jsonrpc
+      emitter: mcp:emitter
 
   # MCP HTTP endpoints (one per method, same path)
   - name: sse_endpoint_post
