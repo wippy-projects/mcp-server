@@ -98,11 +98,31 @@ local function handle_call(id, params, scope)
         return jsonrpc.invalid_params(id, "Unknown tool: " .. tool_name), nil
     end
 
-    -- Invoke via funcs.call with duration measurement
+    -- Invoke via funcs.call with duration measurement, protected by pcall
     log:debug("calling tool", {tool = tool_name, entry_id = tool.entry_id})
     local start = time.now()
-    local result, call_err = funcs.call(tool.entry_id, arguments)
+    local ok, result, call_err = pcall(funcs.call, tool.entry_id, arguments)
     local duration_ms = time.now():sub(start):milliseconds()
+
+    -- pcall caught a Lua runtime error
+    if not ok then
+        local err_msg = tostring(result) -- pcall puts error in first return
+        log:error("tool call crashed", {
+            tool = tool_name,
+            entry_id = tool.entry_id,
+            duration_ms = duration_ms,
+            error = err_msg
+        })
+        return jsonrpc.encode_response(id, {
+            content = {{type = "text", text = "Tool error: " .. err_msg}},
+            isError = true
+        }), {
+            tool_name = tool_name,
+            duration_ms = duration_ms,
+            success = false,
+            error = err_msg
+        }
+    end
 
     -- Build call metadata for event emission
     local call_info = {
@@ -125,19 +145,29 @@ local function handle_call(id, params, scope)
         }), call_info
     end
 
-    -- Wrap result into MCP TextContent
+    -- Wrap result into MCP TextContent, preserving isError from tool
     local content
+    local is_error = false
     if type(result) == "string" then
         content = {{type = "text", text = result}}
     elseif type(result) == "table" and result.content then
         content = result.content
+        is_error = result.isError == true
     else
         content = {{type = "text", text = tostring(result)}}
     end
 
+    if is_error then
+        log:warn("tool returned error", {
+            tool = tool_name,
+            duration_ms = duration_ms
+        })
+        call_info.success = false
+    end
+
     return jsonrpc.encode_response(id, {
         content = content,
-        isError = false
+        isError = is_error
     }), call_info
 end
 
