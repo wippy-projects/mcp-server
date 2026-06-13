@@ -102,30 +102,40 @@ See [Prompts docs](docs/prompts.md) for dynamic prompts, template inheritance, a
 
 ## Per-tool / per-prompt authorization (RBAC)
 
-A tool or prompt may be gated to the current authenticated actor. Add a
-`mcp.requires` block pointing at a protected registry resource the host already
-governs with a `security.policy`:
+A tool or prompt may be restricted to specific security groups. Add an
+`mcp.groups` list — the groups allowed to see and call it:
 
 ```yaml
 meta:
   mcp.tool: true
   mcp.name: "count_users"
-  mcp.requires:
-    action: access                              # defaults to "access"
-    resource: myapp.users:list_users.endpoint   # any resource your policies gate
+  mcp.groups:
+    - myapp.security:admin
+    - myapp.security:user_manager
 ```
 
 The entry is visible in `tools/list` / `prompts/list` and callable via
-`tools/call` / `prompts/get` **only if** `security.can(action, resource)` passes
-for the current actor — the same evaluation the HTTP endpoint firewall runs, so
-visibility tracks your existing policies (single source of truth). Entries
-without `mcp.requires` are **public** (unchanged behavior).
+`tools/call` / `prompts/get` **only if** the current actor belongs to at least
+one listed group. Entries without `mcp.groups` are **public** (unchanged
+behavior).
 
 - Both list and call are gated from one place: `tools/call` re-discovers, so an
   unauthorized tool is simply absent → `Unknown tool` (leak-safe — a hidden tool
   is indistinguishable from a nonexistent one).
-- A **nil actor** (stdio transport, anonymous) fails **closed** — gated entries
-  are hidden.
+- A **nil actor** or an actor with no groups (stdio transport, anonymous) fails
+  **closed** — gated entries are hidden.
+
+### Host requirement: expose the actor's groups
+
+The package reads the actor's groups from `security.actor():meta().groups` (a
+`string[]`). The host must populate this when it mints the session actor, e.g.:
+
+```lua
+local actor = security.new_actor(user_id, { groups = user_group_ids })
+```
+
+`security` is a core Wippy module — declare it in the `modules:` of the MCP
+libraries (already done in this package).
 
 ### Emergency kill-switch
 
@@ -140,9 +150,6 @@ incident response), declare a `registry.entry` in the host app:
   data:
     emergency_hide_gated: true   # flip to hide every gated entry
 ```
-
-Requires the host to provide the `security` module to the MCP libraries (it is a
-core Wippy module — no extra wiring beyond the standard dependency).
 
 ## Supported MCP Methods
 

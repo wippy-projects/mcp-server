@@ -15,16 +15,17 @@ local log = logger:named("mcp.tools")
 ---------------------------------------------------------------------------
 -- Per-tool authorization (RBAC)
 --
--- A tool MAY declare `meta["mcp.requires"] = {action, resource}` pointing at a
--- protected registry resource. It is then visible/callable only if the current
--- actor passes `security.can(action, resource)` — the same check the endpoint
--- firewall runs, so tool visibility tracks the host's existing policies (single
--- source of truth). Tools without `mcp.requires` are public.
+-- A tool MAY declare `meta["mcp.groups"] = {"<group-id>", ...}` — the security
+-- groups allowed to see/call it. It is visible only if the current actor belongs
+-- to at least one of them. Tools without `mcp.groups` are public.
+--
+-- The actor's groups are read from `security.actor():meta().groups`, which the
+-- host populates at login (no DB round-trip). A nil actor or an actor with no
+-- groups (stdio / anonymous) fails closed.
 --
 -- Gating both `tools/list` (here) and `tools/call` happens for free: handle_call
 -- re-runs discover(), so an unauthorized tool is simply absent → "Unknown tool"
--- (leak-safe — indistinguishable from a nonexistent tool). A nil actor (stdio /
--- anonymous) fails closed.
+-- (leak-safe — indistinguishable from a nonexistent tool).
 --
 -- Emergency kill-switch (host-tunable, no redeploy): the host app may declare a
 -- `registry.entry` with `meta.type = "mcp.gating"` whose data carries
@@ -42,17 +43,35 @@ local function gating_emergency_hide()
     return false
 end
 
-local function authorized(meta, emergency_hide)
-    local req = meta["mcp.requires"]
-    if not req or not req.resource then
+-- Set of the current actor's security groups (or nil if no actor / no groups).
+local function actor_group_set()
+    local actor = security.actor()
+    if not actor then return nil end
+    local meta = actor:meta()
+    local groups = meta and meta.groups
+    if type(groups) ~= "table" then return nil end
+    local set = {}
+    for _, g in ipairs(groups) do set[g] = true end
+    return set
+end
+
+local function authorized(meta, emergency_hide, group_set)
+    local required = meta["mcp.groups"]
+    if not required then
         return true -- public tool, no gate
     end
     if emergency_hide then
         return false -- kill-switch active: hide all gated tools
     end
-    -- Fail-closed: a nil actor or any evaluation error denies visibility.
-    local ok, allowed = pcall(security.can, req.action or "access", req.resource)
-    return ok and allowed == true
+    if not group_set then
+        return false -- nil actor / no groups → fail closed
+    end
+    for _, g in ipairs(required) do
+        if group_set[g] then
+            return true -- member of at least one allowed group
+        end
+    end
+    return false
 end
 
 ---------------------------------------------------------------------------
@@ -69,14 +88,15 @@ local function discover(scope)
     local tools = {}
     local count = 0
     local emergency_hide = gating_emergency_hide()
+    local group_set = actor_group_set()
     for _, entry in ipairs(entries) do
         local meta = entry.meta
         if meta and meta["mcp.tool"] == true then
             -- Scope filter: scoped tools only visible on matching endpoints
             if meta["mcp.scope"] and meta["mcp.scope"] ~= scope then
                 -- skip: tool has a scope that doesn't match this endpoint
-            elseif not authorized(meta, emergency_hide) then
-                -- skip: actor not authorized for this gated tool (RBAC)
+            elseif not authorized(meta, emergency_hide, group_set) then
+                -- skip: actor not in an allowed group for this gated tool (RBAC)
             else
                 local name = meta["mcp.name"] or entry.id
                 tools[name] = {

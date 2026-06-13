@@ -15,11 +15,12 @@ local log = logger:named("mcp.prompts")
 
 ---------------------------------------------------------------------------
 -- Per-prompt authorization (RBAC) — mirrors tools.lua. A prompt MAY declare
--- `meta["mcp.requires"] = {action, resource}`; it is visible/gettable only if
--- the current actor passes `security.can(action, resource)`. Prompts without
--- `mcp.requires` are public. Gates both prompts/list and prompts/get (handle_get
--- re-runs discover → "Unknown prompt"). nil actor fails closed. The host
--- `meta.type = "mcp.gating"` entry with `emergency_hide_gated = true` hides all.
+-- `meta["mcp.groups"] = {"<group-id>", ...}`; it is visible/gettable only if the
+-- current actor belongs to at least one. Prompts without `mcp.groups` are public.
+-- Actor groups come from `security.actor():meta().groups`. nil actor fails closed.
+-- Gates both prompts/list and prompts/get (handle_get re-runs discover →
+-- "Unknown prompt"). The host `meta.type = "mcp.gating"` entry with
+-- `emergency_hide_gated = true` hides all gated prompts.
 ---------------------------------------------------------------------------
 
 local function gating_emergency_hide()
@@ -33,16 +34,34 @@ local function gating_emergency_hide()
     return false
 end
 
-local function authorized(meta, emergency_hide)
-    local req = meta["mcp.requires"]
-    if not req or not req.resource then
+local function actor_group_set()
+    local actor = security.actor()
+    if not actor then return nil end
+    local meta = actor:meta()
+    local groups = meta and meta.groups
+    if type(groups) ~= "table" then return nil end
+    local set = {}
+    for _, g in ipairs(groups) do set[g] = true end
+    return set
+end
+
+local function authorized(meta, emergency_hide, group_set)
+    local required = meta["mcp.groups"]
+    if not required then
         return true -- public prompt, no gate
     end
     if emergency_hide then
         return false -- kill-switch active
     end
-    local ok, allowed = pcall(security.can, req.action or "access", req.resource)
-    return ok and allowed == true
+    if not group_set then
+        return false -- nil actor / no groups → fail closed
+    end
+    for _, g in ipairs(required) do
+        if group_set[g] then
+            return true
+        end
+    end
+    return false
 end
 
 ---------------------------------------------------------------------------
@@ -59,14 +78,15 @@ local function discover(scope)
     local prompts = {}
     local count = 0
     local emergency_hide = gating_emergency_hide()
+    local group_set = actor_group_set()
     for _, entry in ipairs(entries) do
         local meta = entry.meta
         if meta and meta["mcp.prompt"] == true then
             -- Scope filter: scoped prompts only visible on matching endpoints
             if meta["mcp.scope"] and meta["mcp.scope"] ~= scope then
                 -- skip: prompt has a scope that doesn't match this endpoint
-            elseif not authorized(meta, emergency_hide) then
-                -- skip: actor not authorized for this gated prompt (RBAC)
+            elseif not authorized(meta, emergency_hide, group_set) then
+                -- skip: actor not in an allowed group for this gated prompt (RBAC)
             else
                 local name = meta["mcp.prompt.name"] or entry.id
                 prompts[name] = {
