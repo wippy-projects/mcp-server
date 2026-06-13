@@ -100,6 +100,50 @@ Prompts support three modes: static (YAML messages), dynamic (Lua handler), and 
 
 See [Prompts docs](docs/prompts.md) for dynamic prompts, template inheritance, and metadata reference.
 
+## Per-tool / per-prompt authorization (RBAC)
+
+A tool or prompt may be gated to the current authenticated actor. Add a
+`mcp.requires` block pointing at a protected registry resource the host already
+governs with a `security.policy`:
+
+```yaml
+meta:
+  mcp.tool: true
+  mcp.name: "count_users"
+  mcp.requires:
+    action: access                              # defaults to "access"
+    resource: myapp.users:list_users.endpoint   # any resource your policies gate
+```
+
+The entry is visible in `tools/list` / `prompts/list` and callable via
+`tools/call` / `prompts/get` **only if** `security.can(action, resource)` passes
+for the current actor — the same evaluation the HTTP endpoint firewall runs, so
+visibility tracks your existing policies (single source of truth). Entries
+without `mcp.requires` are **public** (unchanged behavior).
+
+- Both list and call are gated from one place: `tools/call` re-discovers, so an
+  unauthorized tool is simply absent → `Unknown tool` (leak-safe — a hidden tool
+  is indistinguishable from a nonexistent one).
+- A **nil actor** (stdio transport, anonymous) fails **closed** — gated entries
+  are hidden.
+
+### Emergency kill-switch
+
+To hide **all** gated tools/prompts at runtime without a redeploy (fail-safe
+incident response), declare a `registry.entry` in the host app:
+
+```yaml
+- name: mcp_gating
+  kind: registry.entry
+  meta:
+    type: mcp.gating
+  data:
+    emergency_hide_gated: true   # flip to hide every gated entry
+```
+
+Requires the host to provide the `security` module to the MCP libraries (it is a
+core Wippy module — no extra wiring beyond the standard dependency).
+
 ## Supported MCP Methods
 
 | Method                      | Type         | Description                            |

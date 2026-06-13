@@ -7,10 +7,43 @@
 
 local registry = require("registry")
 local funcs = require("funcs")
+local security = require("security")
 local jsonrpc = require("jsonrpc")
 local logger = require("logger")
 
 local log = logger:named("mcp.prompts")
+
+---------------------------------------------------------------------------
+-- Per-prompt authorization (RBAC) — mirrors tools.lua. A prompt MAY declare
+-- `meta["mcp.requires"] = {action, resource}`; it is visible/gettable only if
+-- the current actor passes `security.can(action, resource)`. Prompts without
+-- `mcp.requires` are public. Gates both prompts/list and prompts/get (handle_get
+-- re-runs discover → "Unknown prompt"). nil actor fails closed. The host
+-- `meta.type = "mcp.gating"` entry with `emergency_hide_gated = true` hides all.
+---------------------------------------------------------------------------
+
+local function gating_emergency_hide()
+    local entries = registry.find({ ["meta.type"] = "mcp.gating" })
+    if not entries then return false end
+    for _, e in ipairs(entries) do
+        if e.data and e.data.emergency_hide_gated == true then
+            return true
+        end
+    end
+    return false
+end
+
+local function authorized(meta, emergency_hide)
+    local req = meta["mcp.requires"]
+    if not req or not req.resource then
+        return true -- public prompt, no gate
+    end
+    if emergency_hide then
+        return false -- kill-switch active
+    end
+    local ok, allowed = pcall(security.can, req.action or "access", req.resource)
+    return ok and allowed == true
+end
 
 ---------------------------------------------------------------------------
 -- Prompt discovery from registry
@@ -25,12 +58,15 @@ local function discover(scope)
 
     local prompts = {}
     local count = 0
+    local emergency_hide = gating_emergency_hide()
     for _, entry in ipairs(entries) do
         local meta = entry.meta
         if meta and meta["mcp.prompt"] == true then
             -- Scope filter: scoped prompts only visible on matching endpoints
             if meta["mcp.scope"] and meta["mcp.scope"] ~= scope then
                 -- skip: prompt has a scope that doesn't match this endpoint
+            elseif not authorized(meta, emergency_hide) then
+                -- skip: actor not authorized for this gated prompt (RBAC)
             else
                 local name = meta["mcp.prompt.name"] or entry.id
                 prompts[name] = {
@@ -199,8 +235,12 @@ local function handle_get(id, params, scope)
     -- Check if this is a dynamic prompt (has a function handler without static messages)
     local messages
     if not prompt.messages and not prompt.extend then
-        -- Dynamic prompt: call the function handler
-        local result, call_err = funcs.call(prompt.entry_id, arguments)
+        -- Dynamic prompt: call the function handler (pcall-guarded so a runtime
+        -- error in the handler returns a JSON-RPC error instead of crashing dispatch)
+        local ok, result, call_err = pcall(funcs.call, prompt.entry_id, arguments)
+        if not ok then
+            return jsonrpc.internal_error(id, "Prompt handler crashed: " .. tostring(result))
+        end
         if call_err then
             return jsonrpc.internal_error(id, "Prompt handler error: " .. tostring(call_err))
         end

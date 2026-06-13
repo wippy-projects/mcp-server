@@ -48,6 +48,7 @@ entries:
     modules:
       - registry
       - funcs
+      - security
       - time
     imports:
       jsonrpc: mcp:jsonrpc
@@ -58,6 +59,7 @@ entries:
     modules:
       - registry
       - funcs
+      - security
     imports:
       jsonrpc: mcp:jsonrpc
 
