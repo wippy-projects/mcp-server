@@ -10,19 +10,51 @@ local jsonrpc = require("jsonrpc")
 local handler = require("handler")
 local emitter = require("emitter")
 local logger = require("logger")
+local registry = require("registry")
+local funcs = require("funcs")
+local crypto = require("crypto")
 
 local log = logger:named("mcp.http")
 
 -- Shared handler instance (created on first request)
 local h = nil
 local emit = nil
-local session_counter = 0
 
---- Generate a new session ID
+--- Generate a new session ID. Random (not time+counter) so two worker
+--- processes can't mint the same id in the same second — which matters now
+--- that ids are shared across workers via the session store.
 local function new_session_id()
-    session_counter = session_counter + 1
-    local id = string.format("%x%x", os.time(), session_counter)
-    return id
+    return crypto.random.string(24, "0123456789abcdef")
+end
+
+--- Resolve an optional host-provided persistent session store, the same way the
+--- gating config is discovered: a registry entry tagged `meta.type =
+--- "mcp.session_store"` whose `data.func` names a function taking
+--- { op = "put"|"has"|"remove", session_id } and returning { valid = bool } for
+--- "has". Returns nil when no host store is configured (in-memory only).
+local function resolve_store()
+    local ok, entries = pcall(registry.find, { ["meta.type"] = "mcp.session_store" })
+    if not ok or type(entries) ~= "table" then return nil end
+    for _, e in ipairs(entries) do
+        local fid = e.data and e.data.func
+        if fid and fid ~= "" then
+            log:info("persistent session store wired", { func = fid })
+            return {
+                put = function(id)
+                    pcall(funcs.call, fid, { op = "put", session_id = id })
+                end,
+                has = function(id)
+                    local okc, res = pcall(funcs.call, fid, { op = "has", session_id = id })
+                    if not okc or type(res) ~= "table" then return false end
+                    return res.valid == true
+                end,
+                remove = function(id)
+                    pcall(funcs.call, fid, { op = "remove", session_id = id })
+                end,
+            }
+        end
+    end
+    return nil
 end
 
 --- Get or create the shared handler instance
@@ -34,7 +66,8 @@ local function get_handler()
     h = handler.new({
         name = "wippy-mcp",
         version = "0.1.0",
-        capabilities = { tools = true, prompts = true }
+        capabilities = { tools = true, prompts = true },
+        store = resolve_store(),
     })
 
     emit = emitter.new(h.config.scope)

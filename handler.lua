@@ -26,33 +26,57 @@ local function new(config)
         emitter = emit
     }
 
-    --- Create a new session with its own protocol state machine
-    function h:create_session(session_id)
-        local server = protocol.new_server({
+    -- Optional persistent session store (host-provided). Lets sessions survive
+    -- across HTTP worker processes and restarts: the per-worker `sessions` table
+    -- is just a cache; `store` is the shared source of truth for "this session
+    -- id is valid". Interface: store.put(id), store.has(id)->bool, store.remove(id).
+    local store = config.store
+
+    -- Build a fresh protocol server. `resumed` brings it straight to READY for a
+    -- session that was already initialized elsewhere (rebuilt from the store).
+    local function build_server(resumed)
+        return protocol.new_server({
             name = config.name or "wippy-mcp",
             version = config.version or "0.1.0",
             capabilities = config.capabilities or { tools = true, prompts = true },
-            instructions = config.instructions
+            instructions = config.instructions,
+            resumed = resumed,
         })
-        self.sessions[session_id] = { server = server }
+    end
+
+    --- Create a new session with its own protocol state machine
+    function h:create_session(session_id)
+        self.sessions[session_id] = { server = build_server(false) }
+        if store then store.put(session_id) end
         log:debug("session created", {session_id = session_id, scope = config.scope})
         return session_id
     end
 
-    --- Get an existing session by ID
+    --- Get an existing session by ID. Falls back to the shared store on a local
+    --- cache miss (different worker / post-restart) and rebuilds the session in
+    --- the READY state, since its presence in the store means it was initialized.
     function h:get_session(session_id)
-        return self.sessions[session_id]
+        local s = self.sessions[session_id]
+        if s then return s end
+        if store and store.has(session_id) then
+            s = { server = build_server(true) }
+            self.sessions[session_id] = s
+            log:debug("session rebuilt from store", {session_id = session_id})
+            return s
+        end
+        return nil
     end
 
     --- Delete a session
     function h:delete_session(session_id)
         self.sessions[session_id] = nil
+        if store then store.remove(session_id) end
         log:debug("session deleted", {session_id = session_id})
     end
 
     --- Dispatch a classified JSON-RPC message through the handler chain
     function h:dispatch(session_id, msg)
-        local session = self.sessions[session_id]
+        local session = self:get_session(session_id)
         if not session then
             log:warn("dispatch to unknown session", {session_id = session_id})
             return nil, "unknown session"

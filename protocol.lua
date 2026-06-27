@@ -22,12 +22,15 @@ local function new_server(config)
     config = config or {}
 
     local server = {
-        state = STATE_DISCONNECTED,
+        -- `resumed` rebuilds a session that was already initialized on another
+        -- worker / before a restart, so it starts READY without a fresh
+        -- handshake (the client won't re-send initialize). See handler.lua.
+        state = config.resumed and STATE_READY or STATE_DISCONNECTED,
         server_info = {
             name = config.name or "wippy-mcp",
             version = config.version or "0.1.0"
         },
-        client_info = nil,
+        client_info = config.client_info,
         capabilities = config.capabilities or { tools = true },
         instructions = config.instructions
     }

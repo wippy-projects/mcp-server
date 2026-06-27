@@ -118,6 +118,9 @@ entries:
       - http
       - json
       - logger
+      - registry
+      - funcs
+      - crypto
     imports:
       handler: mcp:handler_lib
       jsonrpc: mcp:jsonrpc
