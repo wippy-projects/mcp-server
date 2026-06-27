@@ -31,6 +31,8 @@ entries:
   - name: protocol
     kind: library.lua
     source: file://protocol.lua
+    modules:
+      - logger
     imports:
       jsonrpc: mcp:jsonrpc
 
@@ -50,6 +52,7 @@ entries:
       - funcs
       - security
       - time
+      - logger
     imports:
       jsonrpc: mcp:jsonrpc
 
@@ -60,12 +63,15 @@ entries:
       - registry
       - funcs
       - security
+      - logger
     imports:
       jsonrpc: mcp:jsonrpc
 
   - name: handler_lib
     kind: library.lua
     source: file://handler.lua
+    modules:
+      - logger
     imports:
       jsonrpc: mcp:jsonrpc
       protocol: mcp:protocol
@@ -81,6 +87,7 @@ entries:
     method: main
     modules:
       - io
+      - logger
     imports:
       jsonrpc: mcp:jsonrpc
       handler: mcp:handler_lib
